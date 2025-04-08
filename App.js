@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { 
-  StyleSheet, 
-  View, 
-  Text, 
-  TouchableOpacity, 
-  Dimensions, 
-  StatusBar 
+import {
+  StyleSheet,
+  View,
+  Text,
+  TouchableOpacity,
+  Dimensions,
+  StatusBar
 } from 'react-native';
 import { GameEngine } from 'react-native-game-engine';
 import Matter from 'matter-js';
@@ -21,6 +21,7 @@ const PADDLE_HEIGHT = 20;
 const PADDLE_WIDTH = 100;
 const WALL_THICKNESS = 30;
 const MAX_BALLS = 7;
+const PHYSICS_TIME_STEP = 1000 / 60; // 60 fps fixed time step
 
 // Game renderer components
 const Wall = (props) => {
@@ -28,7 +29,7 @@ const Wall = (props) => {
   const height = props.size[1];
   const x = props.body.position.x - width / 2;
   const y = props.body.position.y - height / 2;
-  
+
   return (
     <View
       style={{
@@ -53,7 +54,7 @@ const Paddle = (props) => {
   const height = props.size[1];
   const x = props.body.position.x - width / 2;
   const y = props.body.position.y - height / 2;
-  
+
   return (
     <View
       style={{
@@ -73,7 +74,7 @@ const Ball = (props) => {
   const radius = props.size[0] / 2;
   const x = props.body.position.x - radius;
   const y = props.body.position.y - radius;
-  
+
   return (
     <View
       style={{
@@ -94,7 +95,7 @@ const BonusTarget = (props) => {
   const height = props.size[1];
   const x = props.body.position.x - width / 2;
   const y = props.body.position.y - height / 2;
-  
+
   return (
     <View
       style={{
@@ -120,7 +121,7 @@ const Obstacle = (props) => {
   const x = props.body.position.x - width / 2;
   const y = props.body.position.y - height / 2;
   const angle = props.body.angle;
-  
+
   return (
     <View
       style={{
@@ -146,105 +147,181 @@ const ScoreDisplay = (props) => {
 
 // Create physics engine
 const createPhysicsWorld = () => {
-  const engine = Matter.Engine.create({ enableSleeping: false });
+  const engine = Matter.Engine.create({
+    enableSleeping: false,
+    timing: {
+      timeScale: 1,
+      timestep: 1000 / 60
+    },
+    positionIterations: 10,  // More iterations for better collision resolution
+    velocityIterations: 10,  // More iterations for smoother physics
+    constraintIterations: 4  // Help with handling constraints
+  });
+
   const world = engine.world;
-  
-  // Set gravity
-  world.gravity.y = 0.5;
-  
+
+  world.gravity.y = 0.5;   // Moderate gravity
+  world.gravity.x = 0;     // No horizontal gravity
+
+  // Enable better collision handling
+  engine.detector.slop = 0.01; // Smaller slop value for more accurate collisions
+
   return { engine, world };
+};
+
+// Helper function to get random position for bonus target
+const getRandomBonusPosition = () => {
+  // Calculate safe margins to keep bonus target visible
+  const bonusSizeHalf = 30; // Half size of the bonus target
+  const safeMarginX = WALL_THICKNESS + bonusSizeHalf + 10;
+  const safeMarginY = WALL_THICKNESS + bonusSizeHalf + 10;
+  
+  // Random position within the playable area (top half of screen)
+  return {
+    x: Math.random() * (width - 2 * safeMarginX) + safeMarginX,
+    y: Math.random() * (height / 2 - safeMarginY) + safeMarginY
+  };
+};
+
+// Helper function to get random angle for obstacle
+const getRandomObstacleAngle = () => {
+  // Random angle between -45 to 45 degrees (calculated in radians)
+  return (Math.random() * Math.PI / 2 - Math.PI / 4);
+};
+
+// Force correction for near-stationary objects
+const applyForceCorrection = (bodies) => {
+  bodies.forEach(body => {
+    if (body.label === 'ball') {
+      const yVel = body.velocity.y;
+      const xVel = body.velocity.x;
+
+      // If the ball is nearly stationary or moving very slowly upward
+      if (Math.abs(yVel) < 0.1 || (yVel < 0 && yVel > -0.3)) {
+        // Apply small downward force
+        Matter.Body.applyForce(body, body.position, {
+          x: 0,
+          y: 0.0005  // Small downward force
+        });
+      }
+
+      // If ball is moving extremely slowly horizontally, dampen it
+      if (Math.abs(xVel) < 0.1) {
+        Matter.Body.setVelocity(body, {
+          x: 0,
+          y: body.velocity.y
+        });
+      }
+    }
+  });
 };
 
 // Game entities
 const createEntities = () => {
   const { engine, world } = createPhysicsWorld();
-  
+
   // Create walls
   const leftWall = Matter.Bodies.rectangle(
-    WALL_THICKNESS / 2, 
-    height / 2, 
-    WALL_THICKNESS, 
-    height, 
+    WALL_THICKNESS / 2,
+    height / 2,
+    WALL_THICKNESS,
+    height,
     { isStatic: true, label: 'leftWall', restitution: 1.0 }
   );
-  
+
   const rightWall = Matter.Bodies.rectangle(
-    width - WALL_THICKNESS / 2, 
-    height / 2, 
-    WALL_THICKNESS, 
-    height, 
+    width - WALL_THICKNESS / 2,
+    height / 2,
+    WALL_THICKNESS,
+    height,
     { isStatic: true, label: 'rightWall', restitution: 1.0 }
   );
-  
+
   const topWall = Matter.Bodies.rectangle(
-    width / 2, 
-    WALL_THICKNESS / 2, 
-    width, 
-    WALL_THICKNESS, 
+    width / 2,
+    WALL_THICKNESS / 2,
+    width,
+    WALL_THICKNESS,
     { isStatic: true, label: 'topWall', restitution: 1.0 }
   );
-  
+
   const bottomSensor = Matter.Bodies.rectangle(
-    width / 2, 
-    height + WALL_THICKNESS / 2, 
-    width, 
-    WALL_THICKNESS, 
-    { 
-      isStatic: true, 
-      isSensor: true, 
-      label: 'bottomSensor' 
+    width / 2,
+    height + WALL_THICKNESS / 2,
+    width,
+    WALL_THICKNESS,
+    {
+      isStatic: true,
+      isSensor: true,
+      label: 'bottomSensor'
     }
   );
-  
+
   // Create paddle
   const paddle = Matter.Bodies.rectangle(
-    width / 2, 
-    height - 100, 
-    PADDLE_WIDTH, 
-    PADDLE_HEIGHT, 
-    { 
-      isStatic: true, 
+    width / 2,
+    height - 100,
+    PADDLE_WIDTH,
+    PADDLE_HEIGHT,
+    {
+      isStatic: true,
       label: 'paddle',
       chamfer: { radius: 10 },
-      restitution: 1.0, // Make sure paddle bounces balls effectively
-      friction: 0.05     // Slight friction to prevent infinite bounce
+      restitution: 1.0,
+      friction: 0.05
     }
   );
-  
+
+  const defaultCategory = 0x0001;
+  const ballCategory = 0x0002;
+  const obstacleCategory = 0x0004;
+
   // Create initial ball
   const ball = Matter.Bodies.circle(
     width / 2,
     height / 3,
     BALL_SIZE,
     {
-      restitution: 0.9,
+      restitution: 0.7,
       friction: 0.01,
-      frictionAir: 0.001,
+      frictionAir: 0.0008,
+      density: 0.015,
       label: 'ball',
-      id: 1
+      id: 1,
+      slop: 0.01,
+      collisionFilter: {
+        category: ballCategory,
+        mask: defaultCategory | obstacleCategory
+      }
     }
   );
-  
+
   // Apply initial velocity to the ball
   Matter.Body.setVelocity(ball, {
-    x: 2 * (Math.random() - 0.5),  // Random direction
-    y: 3                          // Downward velocity
+    x: 0,  // Start with purely vertical motion for predictability
+    y: 3   // Consistent downward velocity
   });
+
+  // Get random position for bonus target
+  const bonusPosition = getRandomBonusPosition();
   
-  // Create bonus target (static)
+  // Create bonus target at random position
   const bonusTarget = Matter.Bodies.rectangle(
-    width / 2,
-    height / 4,
+    bonusPosition.x,
+    bonusPosition.y,
     60,
     60,
     {
       isStatic: true,
-      isSensor: true, // Won't physically collide
+      isSensor: true,
       label: 'bonusTarget'
     }
   );
+
+  // Get random angle for obstacle
+  const obstacleAngle = getRandomObstacleAngle();
   
-  // Create obstacle (static)
+  // Create obstacle with random rotation
   const obstacle = Matter.Bodies.rectangle(
     width / 2,
     height / 2,
@@ -252,105 +329,138 @@ const createEntities = () => {
     20,
     {
       isStatic: true,
-      angle: Math.PI / 4, // 45 degrees rotation
+      angle: obstacleAngle,
       label: 'obstacle',
-      restitution: 1.0    // Full bounce on obstacle
+      restitution: 0.7,
+      friction: 0.05,
+      slop: 0.01,
+      chamfer: { radius: 4 },
+      collisionFilter: {
+        category: obstacleCategory,
+        mask: ballCategory
+      }
     }
   );
 
   // Add all bodies to the world
   Matter.Composite.add(world, [
-    leftWall, 
-    rightWall, 
-    topWall, 
-    bottomSensor, 
-    paddle, 
+    leftWall,
+    rightWall,
+    topWall,
+    bottomSensor,
+    paddle,
     ball,
     bonusTarget,
     obstacle
   ]);
-  
+
   // Create a collision detection event
   Matter.Events.on(engine, 'collisionStart', (event) => {
     const pairs = event.pairs;
-    
+
     for (let i = 0; i < pairs.length; i++) {
       const { bodyA, bodyB } = pairs[i];
-      
+
+      // Ball hit obstacle case
+      if ((bodyA.label === 'obstacle' && bodyB.label === 'ball') ||
+        (bodyA.label === 'ball' && bodyB.label === 'obstacle')) {
+        const ball = bodyA.label === 'ball' ? bodyA : bodyB;
+        const obstacle = bodyA.label === 'obstacle' ? bodyA : bodyB;
+
+        // Get the current velocity
+        const vel = ball.velocity;
+        const speed = Math.sqrt(vel.x * vel.x + vel.y * vel.y);
+
+        // Determine if ball is above or below obstacle
+        const isAboveObstacle = ball.position.y < obstacle.position.y;
+
+        // If ball is above and moving slowly upward, ensure it starts falling
+        if (isAboveObstacle && vel.y > -1 && vel.y < 0.5) {
+          Matter.Body.setVelocity(ball, {
+            x: vel.x * 0.8,  // slow horizontal movement
+            y: 0.5           // Small downward velocity
+          });
+        }
+
+        // If ball is below obstacle and got trapped, give it a push down
+        if (!isAboveObstacle && Math.abs(vel.y) < 0.5) {
+          Matter.Body.setVelocity(ball, {
+            x: vel.x * 0.8,
+            y: 1.5  // Push downward more strongly
+          });
+        }
+
+        // If the ball is moving too fast after obstacle collision, cap its velocity
+        if (speed > 10) {
+          const scaleFactor = 10 / speed;
+          Matter.Body.setVelocity(ball, {
+            x: vel.x * scaleFactor,
+            y: vel.y * scaleFactor
+          });
+        }
+      }
+
       // Ball hit bottom sensor = game over
       if ((bodyA.label === 'bottomSensor' && bodyB.label === 'ball') ||
-          (bodyA.label === 'ball' && bodyB.label === 'bottomSensor')) {
+        (bodyA.label === 'ball' && bodyB.label === 'bottomSensor')) {
         if (engine.gameStatus) {
           engine.gameStatus.over = true;
         }
       }
-      
+
       // Ball hit bonus target = score points
       if ((bodyA.label === 'bonusTarget' && bodyB.label === 'ball') ||
-          (bodyA.label === 'ball' && bodyB.label === 'bonusTarget')) {
+        (bodyA.label === 'ball' && bodyB.label === 'bonusTarget')) {
         if (engine.gameStatus) {
           engine.gameStatus.score += 25;
           // Move bonus target to a new random location
+          const newBonusPosition = getRandomBonusPosition();
           Matter.Body.setPosition(
             bodyA.label === 'bonusTarget' ? bodyA : bodyB,
-            {
-              x: Math.random() * (width - 150) + 75,
-              y: Math.random() * (height / 2 - 150) + 75
-            }
+            newBonusPosition
           );
         }
       }
-      
+
       // Ball hit paddle = score points and add velocity
       if ((bodyA.label === 'paddle' && bodyB.label === 'ball') ||
-          (bodyA.label === 'ball' && bodyB.label === 'paddle')) {
+        (bodyA.label === 'ball' && bodyB.label === 'paddle')) {
         const ball = bodyA.label === 'ball' ? bodyA : bodyB;
-        
+        const paddle = bodyA.label === 'paddle' ? bodyA : bodyB;
+
         if (engine.gameStatus) {
           engine.gameStatus.score += 10;
-          
-          // Add some random horizontal velocity to make the game more interesting
-          const currentVelocity = ball.velocity;
+
+          // Calculate impact point relative to paddle center
+          const impactPoint = ball.position.x - paddle.position.x;
+          const paddleHalfWidth = PADDLE_WIDTH / 2;
+
+          // Convert to a value between -1 and 1
+          const relativeImpact = impactPoint / paddleHalfWidth;
+
+          // Apply velocity based on where the ball hit the paddle
           Matter.Body.setVelocity(ball, {
-            x: currentVelocity.x + (Math.random() - 0.5) * 3,
-            y: currentVelocity.y * -1.05 // Boost upward velocity slightly
+            // Horizontal deflection based on impact point
+            x: relativeImpact * 5,
+            // Consistent vertical velocity with slight boost
+            y: ball.velocity.y * -1.05
           });
-          
+
           // 10% chance to spawn a new ball when hitting paddle
-          if (Math.random() < 0.1 && engine.gameStatus.ballCount < MAX_BALLS) {
-            const newBall = Matter.Bodies.circle(
-              width / 2,
-              height / 3,
-              BALL_SIZE,
-              {
-                restitution: 0.9,
-                friction: 0.01,
-                frictionAir: 0.001,
-                label: 'ball',
-                id: engine.gameStatus.ballCount + 1
-              }
-            );
-            
-            // Apply initial velocity to the new ball
-            Matter.Body.setVelocity(newBall, {
-              x: 3 * (Math.random() - 0.5),
-              y: 3
-            });
-            
-            Matter.World.add(world, newBall);
-            engine.gameStatus.ballCount += 1;
-          }
+          // if (Math.random() < 0.1 && engine.gameStatus.ballCount < MAX_BALLS) {
+          //   // New ball code would go here if we had time ;(
+          // }
         }
       }
     }
   });
-  
+
   engine.gameStatus = {
     score: 0,
     over: false,
     ballCount: 1
   };
-  
+
   return {
     physics: { engine, world },
     leftWall: { body: leftWall, size: [WALL_THICKNESS, height], color: '#86C232', renderer: Wall },
@@ -368,38 +478,51 @@ const createEntities = () => {
 // Game update system
 const Physics = (entities, { time }) => {
   const { engine, world } = entities.physics;
+
+  applyForceCorrection(Matter.Composite.allBodies(world));
   
-  // Regular physics update
-  Matter.Engine.update(engine, time.delta);
-  
-  // Check if any balls have become too slow and need a velocity boost
+ 
+  const delta = Math.min(time.delta, 32);
+  Matter.Engine.update(engine, delta);
+
+  // Check balls for problematic velocities
   const bodies = Matter.Composite.allBodies(world);
   bodies.forEach(body => {
     if (body.label === 'ball') {
       const velocity = body.velocity;
       const speed = Math.sqrt(velocity.x * velocity.x + velocity.y * velocity.y);
-      
-      // If ball is moving too slowly, give it a boost
-      if (speed < 2) {
+
+      // Cap maximum speed
+      if (speed > 15) {
+        const scaleFactor = 15 / speed;
         Matter.Body.setVelocity(body, {
-          x: velocity.x * 1.2 + (Math.random() - 0.5),
-          y: velocity.y * 1.2 + (Math.random() - 0.5)
+          x: velocity.x * scaleFactor,
+          y: velocity.y * scaleFactor
         });
       }
-      
-      // If ball has extremely low velocity, reset it with new velocity
-      if (speed < 0.5) {
+
+      // Only boost balls that are nearly stopped
+      if (speed < 0.2) {
+        // Add a tiny downward boost to ensure gravity takes effect
         Matter.Body.setVelocity(body, {
-          x: 2 * (Math.random() - 0.5),
-          y: 3
+          x: 0,
+          y: 0.5
+        });
+      }
+
+      // Remove slight upward movement when ball should be falling
+      if (Math.abs(velocity.x) < 0.5 && velocity.y > -0.5 && velocity.y < 0.2) {
+        Matter.Body.setVelocity(body, {
+          x: velocity.x,
+          y: 0.5
         });
       }
     }
   });
-  
+
   // Update score display
   entities.scoreDisplay.score = engine.gameStatus.score;
-  
+
   return entities;
 };
 
@@ -409,8 +532,8 @@ const WelcomeScreen = ({ onStart }) => {
     <View style={styles.welcomeContainer}>
       <Text style={styles.welcomeTitle}>Ball Bounce</Text>
       <Text style={styles.welcomeSubtitle}>A Matter.js Physics Game</Text>
-      <Text style={styles.welcomeCreator}>Created by: AJ and Anjal</Text>
-      
+      <Text style={styles.welcomeCreator}>Created by: AJ, Anjal and Chafik</Text>
+
       <View style={styles.instructionsContainer}>
         <Text style={styles.instructionsTitle}>How to Play:</Text>
         <Text style={styles.instructionsText}>• Slide your finger to move the paddle</Text>
@@ -420,7 +543,7 @@ const WelcomeScreen = ({ onStart }) => {
         <Text style={styles.instructionsText}>• Hitting the bonus target scores 25 points</Text>
         <Text style={styles.instructionsText}>• Adjust difficulty with the buttons at the bottom</Text>
       </View>
-      
+
       <TouchableOpacity style={styles.startButton} onPress={onStart}>
         <Text style={styles.startButtonText}>Start Game</Text>
       </TouchableOpacity>
@@ -436,27 +559,27 @@ const Game = () => {
   const [showWelcome, setShowWelcome] = useState(true);
   const [entities, setEntities] = useState(null);
   const [difficulty, setDifficulty] = useState(0.5); // Default difficulty
-  
+
   const gameEngineRef = useRef(null);
   const paddleRef = useRef(null);
-  
+
   // Initialize the game world
   useEffect(() => {
     if (!showWelcome && !entities) {
       const gameEntities = createEntities();
-      
+
       // Set initial difficulty
       if (gameEntities.physics && gameEntities.physics.world) {
         gameEntities.physics.world.gravity.y = difficulty;
       }
-      
+
       setEntities(gameEntities);
       setRunning(true);
       setGameOver(false);
       setScore(0);
     }
   }, [showWelcome, entities, difficulty]);
-  
+
   // Game event handling
   const onEvent = (e) => {
     if (e.type === 'game-over') {
@@ -467,20 +590,20 @@ const Game = () => {
       }
     }
   };
-  
+
   // Update function for game loop
   const updateHandler = (entities, { touches, dispatch, time }) => {
     if (!entities || !entities.physics || !entities.physics.engine) {
       return entities;
     }
-    
+
     const { engine } = entities.physics;
-    
+
     // Check for game over
     if (engine.gameStatus && engine.gameStatus.over) {
       dispatch({ type: 'game-over' });
     }
-    
+
     // Update paddle position from touches
     touches.filter(t => t.type === 'move').forEach(t => {
       if (paddleRef.current && !gameOver && entities.paddle && entities.paddle.body) {
@@ -489,65 +612,62 @@ const Game = () => {
           PADDLE_WIDTH / 2 + WALL_THICKNESS,
           Math.min(t.event.pageX, width - PADDLE_WIDTH / 2 - WALL_THICKNESS)
         );
-        
+
         Matter.Body.setPosition(paddleBody, {
           x: newX,
           y: paddleBody.position.y
         });
       }
     });
-    
+
     return Physics(entities, { time });
   };
-  
+
   // Handle paddle movement with pan gesture
   const onPanGestureEvent = ({ nativeEvent }) => {
-    if (gameEngineRef.current && !gameOver && entities && 
-        entities.paddle && entities.paddle.body) {
+    if (gameEngineRef.current && !gameOver && entities &&
+      entities.paddle && entities.paddle.body) {
       const paddleBody = entities.paddle.body;
       const newX = Math.max(
         PADDLE_WIDTH / 2 + WALL_THICKNESS,
         Math.min(nativeEvent.absoluteX, width - PADDLE_WIDTH / 2 - WALL_THICKNESS)
       );
-      
+
       Matter.Body.setPosition(paddleBody, {
         x: newX,
         y: paddleBody.position.y
       });
     }
   };
-  
+
   // Change difficulty
   const changeDifficulty = (change) => {
     if (entities && entities.physics && entities.physics.world) {
       const newGravity = Math.max(0.2, Math.min(1.0, entities.physics.world.gravity.y + change));
       entities.physics.world.gravity.y = newGravity;
       setDifficulty(newGravity);
-      
-      // Log to confirm the change
-      console.log(`Difficulty changed to: ${newGravity}`);
     }
   };
-  
+
   // Restart game
   const restartGame = () => {
     const newEntities = createEntities();
-    
+
     // Set difficulty based on current setting
     if (newEntities.physics && newEntities.physics.world) {
       newEntities.physics.world.gravity.y = difficulty;
     }
-    
+
     setEntities(newEntities);
     setRunning(true);
     setGameOver(false);
     setScore(0);
-    
+
     if (gameEngineRef.current) {
       gameEngineRef.current.swap(newEntities);
     }
   };
-  
+
   // Start game from welcome screen
   const startGame = () => {
     setShowWelcome(false);
@@ -561,7 +681,7 @@ const Game = () => {
       </GestureHandlerRootView>
     );
   }
-  
+
   // If entities aren't ready yet, show loading
   if (!entities) {
     return (
@@ -572,12 +692,12 @@ const Game = () => {
       </GestureHandlerRootView>
     );
   }
-  
+
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <View style={styles.container}>
         <StatusBar hidden />
-        
+
         <GameEngine
           ref={gameEngineRef}
           style={styles.gameContainer}
@@ -586,14 +706,14 @@ const Game = () => {
           running={running}
           onEvent={onEvent}
         />
-        
+
         <PanGestureHandler
           onGestureEvent={onPanGestureEvent}
           enabled={running && !gameOver}
         >
           <View style={styles.controlArea} ref={paddleRef} />
         </PanGestureHandler>
-        
+
         {gameOver && (
           <View style={styles.gameOverContainer}>
             <Text style={styles.gameOverText}>Game Over</Text>
@@ -603,21 +723,21 @@ const Game = () => {
             </TouchableOpacity>
           </View>
         )}
-        
-        {/* Difficulty adjustment controls - Now with proper state management */}
+
+        {/* Difficulty adjustment controls */}
         <View style={styles.controlsContainer}>
-          <TouchableOpacity 
-            style={[styles.button, styles.smallButton]} 
+          <TouchableOpacity
+            style={[styles.button, styles.smallButton]}
             onPress={() => changeDifficulty(-0.1)}
           >
-            <Text style={styles.buttonText}>Easier</Text>
+            <Text style={styles.buttonText}>Slower</Text>
           </TouchableOpacity>
-          
-          <TouchableOpacity 
-            style={[styles.button, styles.smallButton]} 
+
+          <TouchableOpacity
+            style={[styles.button, styles.smallButton]}
             onPress={() => changeDifficulty(0.1)}
           >
-            <Text style={styles.buttonText}>Harder</Text>
+            <Text style={styles.buttonText}>Faster</Text>
           </TouchableOpacity>
         </View>
 
@@ -710,6 +830,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 15,
     paddingVertical: 10,
     marginHorizontal: 5,
+    marginVertical: 40,
   },
   controlsContainer: {
     position: 'absolute',
